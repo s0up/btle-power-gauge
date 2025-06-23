@@ -75,21 +75,28 @@ void Display::drawHeader() {
 }
 
 void Display::drawBatteryInfo() {
+  // Voltage: Top right, large text
   tft.setTextColor(COLOR_VOLTAGE, COLOR_BG);
-  tft.setTextSize(2);
+  tft.setTextSize(3);
   if (abs(currentData.voltage - lastDisplayedData.voltage) > 0.01f) {
-    clearValue(5, 5, 100, 16);
-    tft.setCursor(5, 5);
+    clearValue(120, 5, 115, 25);
+    tft.setCursor(120, 5);
     tft.print(String(currentData.voltage, 2) + "V");
   }
+  
+  // Time to Go: Right side, medium text
   if (currentData.ttg_minutes != lastDisplayedData.ttg_minutes && currentData.ttg_minutes > 0) {
-    clearValue(120, 5, 100, 16);
+    clearValue(120, 35, 115, 20);
     tft.setTextColor(COLOR_TEXT, COLOR_BG);
-    tft.setTextSize(1);
+    tft.setTextSize(2);
     int hours = currentData.ttg_minutes / 60;
     int mins = currentData.ttg_minutes % 60;
-    tft.setCursor(120, 10);
-    tft.print("TTG: " + String(hours) + "h" + String(mins) + "m");
+    tft.setCursor(120, 35);
+    if (hours > 0) {
+      tft.print(String(hours) + "h" + String(mins) + "m");
+    } else {
+      tft.print(String(mins) + "min");
+    }
   }
 }
 
@@ -98,81 +105,110 @@ void Display::drawCurrentAndPower() {
   if (currentData.current > 0.1f) currentColor = COLOR_CURRENT_CHARGE;
   else if (currentData.current < -0.1f) currentColor = COLOR_CURRENT_DISCHARGE;
   
+  // Current: Right middle, large text - space for up to 999A
   if (abs(currentData.current - lastDisplayedData.current) > 0.01f) {
-    clearValue(5, 25, 120, 16);
+    clearValue(120, 60, 115, 25);
     tft.setTextColor(currentColor, COLOR_BG);
-    tft.setTextSize(2);
-    tft.setCursor(5, 25);
-    tft.print(String(currentData.current, 2) + "A");
+    tft.setTextSize(3);
+    tft.setCursor(120, 60);
+    // Format current to handle high values properly
+    if (abs(currentData.current) >= 100.0f) {
+      tft.print(String((int)currentData.current) + "A");  // No decimal for 100A+
+    } else if (abs(currentData.current) >= 10.0f) {
+      tft.print(String(currentData.current, 1) + "A");    // One decimal for 10-99A
+    } else {
+      tft.print(String(currentData.current, 1) + "A");    // One decimal for <10A
+    }
   }
+  
+  // Power: Right lower, large text - space for up to 9999W
   if (abs(currentData.power - lastDisplayedData.power) > 0.1f) {
-    clearValue(130, 25, 100, 16);
+    clearValue(120, 90, 115, 25);
     tft.setTextColor(currentColor, COLOR_BG);
-    tft.setTextSize(2);
-    tft.setCursor(130, 25);
-    tft.print(String(abs(currentData.power), 0) + "W");
+    tft.setTextSize(3);
+    tft.setCursor(120, 90);
+    // Format power to handle high values
+    if (abs(currentData.power) >= 1000.0f) {
+      tft.print(String((int)(currentData.power/1000)) + "kW");  // Show as kW for 1000W+
+    } else {
+      tft.print(String((int)abs(currentData.power)) + "W");    // Watts for <1000W
+    }
   }
+  
+  // Status: Bottom right, smaller text
   if ((currentData.current > 0.1f) != (lastDisplayedData.current > 0.1f) ||
       (currentData.current < -0.1f) != (lastDisplayedData.current < -0.1f)) {
-    clearValue(5, 45, 120, 10);
+    clearValue(120, 115, 115, 20);
     tft.setTextColor(currentColor, COLOR_BG);
-    tft.setTextSize(1);
-    tft.setCursor(5, 45);
-    if (currentData.current > 0.1f) tft.print("CHARGING");
-    else if (currentData.current < -0.1f) tft.print("DISCHARGING");
+    tft.setTextSize(2);
+    tft.setCursor(120, 115);
+    if (currentData.current > 0.1f) tft.print("CHARGE");
+    else if (currentData.current < -0.1f) tft.print("DRAIN");
     else tft.print("IDLE");
   }
 }
 
 void Display::drawSOCBar() {
   if (abs(currentData.soc - lastDisplayedData.soc) > 0.1f) {
-    clearValue(5, 60, 60, 16);
+    // Clear the entire left area for battery display
+    clearValue(5, 5, 110, 125);
     uint16_t socColor = COLOR_SOC_HIGH;
     if (currentData.soc < 20.0f) socColor = COLOR_SOC_LOW;
     else if (currentData.soc < 50.0f) socColor = COLOR_SOC_MED;
+    
+    // MASSIVE battery percentage at the top - size adjusts for 100%
     tft.setTextColor(socColor, COLOR_BG);
+    if (currentData.soc >= 100.0f) {
+      // Size 5 for "100%" to fit in width (30x40px per char * 4 = 120px)
+      tft.setTextSize(5);
+      tft.setCursor(5, 10);
+      tft.print("100%");
+    } else {
+      // Size 6 for "99%" and below (36x48px per char * 3 = 108px)
+      tft.setTextSize(6);
+      tft.setCursor(5, 5);
+      tft.print(String((int)currentData.soc) + "%");
+    }
+    
+    // "Total" label below the percentage - medium size
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
     tft.setTextSize(2);
-    tft.setCursor(5, 60);
-    tft.print(String(currentData.soc, 1) + "%");
-    int barWidth = 150, barHeight = 8, barX = 75, barY = 65;
-    tft.drawRect(barX, barY, barWidth, barHeight, COLOR_TEXT);
-    tft.fillRect(barX + 1, barY + 1, barWidth - 2, barHeight - 2, COLOR_BG);
-    int fillWidth = (int)((currentData.soc / 100.0f) * (barWidth - 2));
-    if (fillWidth > 0) tft.fillRect(barX + 1, barY + 1, fillWidth, barHeight - 2, socColor);
+    tft.setCursor(5, 65);
+    tft.print("Total");
+    
+    // Total value on separate line - large size
+    tft.setTextColor(COLOR_TEXT, COLOR_BG);
+    tft.setTextSize(3);
+    tft.setCursor(5, 85);
+    // Format for space efficiency - handles high values
+    if (abs(currentData.consumed_ah) >= 1000.0f) {
+      // Very high values: show in kAh
+      tft.print(String(currentData.consumed_ah/1000.0f, 1) + "kAh");
+    } else if (abs(currentData.consumed_ah) >= 100.0f) {
+      // 100+ Ah: no decimal
+      tft.print(String((int)currentData.consumed_ah) + "Ah");
+    } else {
+      // <100 Ah: one decimal
+      tft.print(String(currentData.consumed_ah, 1) + "Ah");
+    }
   }
 }
 
 void Display::drawAuxInfo() {
-  if (abs(currentData.consumed_ah - lastDisplayedData.consumed_ah) > 0.1f) {
-    clearValue(5, 80, 100, 10);
-    tft.setTextColor(COLOR_TEXT, COLOR_BG);
-    tft.setTextSize(1);
-    tft.setCursor(5, 80);
-    tft.print("Used: " + String(currentData.consumed_ah, 1) + "Ah");
-  }
+  // Total is now handled in drawSOCBar() to avoid spacing issues
+  
+  // Alarms: Full width at very bottom if present
   if (currentData.alarms != lastDisplayedData.alarms && currentData.alarms != 0) {
-    clearValue(120, 80, 70, 20);
+    clearValue(0, 125, 240, 10);
     tft.setTextColor(COLOR_ALARM, COLOR_BG);
     tft.setTextSize(1);
-    tft.setCursor(120, 80);
-    tft.print("ALARM!");
-    tft.setCursor(120, 95);
-    tft.print("0x" + String(currentData.alarms, HEX));
+    tft.setCursor(5, 125);
+    tft.print("ALARM: 0x" + String(currentData.alarms, HEX));
   }
 }
 
 void Display::drawConnectionStatus() {
-  if (currentData.rssi != lastDisplayedData.rssi) {
-    clearValue(5, 110, 100, 10);
-    tft.setTextColor(COLOR_TEXT, COLOR_BG);
-    tft.setTextSize(1);
-    uint16_t signalColor = COLOR_TEXT;
-    if (currentData.rssi > -50) signalColor = COLOR_CURRENT_CHARGE;
-    else if (currentData.rssi < -80) signalColor = COLOR_CURRENT_DISCHARGE;
-    tft.setTextColor(signalColor, COLOR_BG);
-    tft.setCursor(5, 110);
-    tft.print("Signal: " + String(currentData.rssi) + "dBm");
-  }
+  // Connection status removed to maximize space for data
 }
 
 void Display::clearValue(int x, int y, int w, int h) {
