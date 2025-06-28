@@ -1,7 +1,21 @@
 #ifndef DISPLAY_H
 #define DISPLAY_H
 
-#include <TFT_eSPI.h>
+#include <Arduino.h>
+#include <GxEPD2_BW.h>
+#include <GxEPD2_3C.h>
+#include <Fonts/FreeMonoBold9pt7b.h>
+#include <Fonts/FreeMonoBold12pt7b.h>
+#include <Fonts/FreeMonoBold18pt7b.h>
+
+// E-ink display pins for Vision Master E290 (from working ESPHome example)
+#define EPD_CS     3   // GPIO3 (corrected from working example)
+#define EPD_DC     4   // GPIO4 (pin 19)  
+#define EPD_RST    5   // GPIO5 (pin 15)
+#define EPD_BUSY   6   // GPIO6 (pin 13)
+#define EPD_MOSI   1   // GPIO1 (corrected from working example)
+#define EPD_SCK    2   // GPIO2 (pin 21) - E-Ink CLK
+#define EPD_POWER  18  // Power control pin - CRITICAL!
 
 struct BatteryData {
   float voltage = 0.0f;
@@ -16,35 +30,23 @@ struct BatteryData {
   int8_t rssi = 0;
   bool data_valid = false;
   unsigned long last_update = 0;
+  
+  // Calculated time fields
+  uint16_t calculated_time_remaining_minutes = 0;  // Time remaining until empty (when discharging)
+  uint16_t calculated_time_to_full_minutes = 0;    // Time to full charge (when charging)
+  bool time_calculation_valid = false;             // Whether the time calculation is reliable
 };
 
 class Display {
 private:
-  TFT_eSPI tft;
+  GxEPD2_BW<GxEPD2_290_T94_V2, GxEPD2_290_T94_V2::HEIGHT> display;
   BatteryData currentData;
   BatteryData lastDisplayedData;
   unsigned long lastScreenUpdate = 0;
   bool screenNeedsUpdate = false;
   
-  void drawHeader();
-  void drawBatteryInfo();
-  void drawCurrentAndPower();
-  void drawSOCBar();
-  void drawAuxInfo();
-  void drawConnectionStatus();
-  void clearValue(int x, int y, int w, int h);
-  
-  // Color definitions
-  static const uint16_t COLOR_BG = TFT_BLACK;
-  static const uint16_t COLOR_TEXT = TFT_WHITE;
-  static const uint16_t COLOR_HEADER = TFT_CYAN;
-  static const uint16_t COLOR_VOLTAGE = TFT_YELLOW;
-  static const uint16_t COLOR_CURRENT_CHARGE = TFT_GREEN;
-  static const uint16_t COLOR_CURRENT_DISCHARGE = TFT_RED;
-  static const uint16_t COLOR_SOC_HIGH = TFT_GREEN;
-  static const uint16_t COLOR_SOC_MED = TFT_YELLOW;
-  static const uint16_t COLOR_SOC_LOW = TFT_RED;
-  static const uint16_t COLOR_ALARM = TFT_MAGENTA;
+  // Change detection method
+  bool hasSignificantChange(const BatteryData& newData, const BatteryData& oldData);
 
 public:
   Display();
@@ -53,7 +55,15 @@ public:
   void refresh();
   void showNoData();
   void showTestScreen();
+  void showConfigScreen(const String& title, const String& line1 = "", const String& line2 = "", const String& line3 = "", const String& line4 = "");
   void setBrightness(uint8_t brightness);
+  void clearScreen();
+  void drawText(int16_t x, int16_t y, const String& text, const GFXfont* font = nullptr);
+  
+  // Status information
+  bool isUpdatePending() const { return screenNeedsUpdate; }
+  unsigned long getLastUpdateTime() const { return lastScreenUpdate; }
+  unsigned long getTimeSinceLastUpdate() const { return millis() - lastScreenUpdate; }
 };
 
 #endif // DISPLAY_H 

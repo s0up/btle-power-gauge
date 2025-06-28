@@ -157,6 +157,7 @@ void VictronBLE::parseSmartShuntData(const uint8_t* data, size_t len, int8_t rss
   if (len < 8) return;
   
   BatteryData batteryData;
+  memset(&batteryData, 0, sizeof(batteryData)); // Initialize all fields
   batteryData.rssi = rssi;
   batteryData.data_valid = true;
   
@@ -224,16 +225,56 @@ void VictronBLE::parseSmartShuntData(const uint8_t* data, size_t len, int8_t rss
     }
   }
   
-  // Send data to display if available
   if (display) {
     display->updateData(batteryData);
   }
   
-  // Also log to serial for debugging
+  calculateBatteryTime(batteryData);
+  
   Serial.printf("[%s] V:%.2f I:%.3f P:%.1f SOC:%.1f%% RSSI:%d\n",
                 targetAddress.toString().c_str(),
                 batteryData.voltage, batteryData.current, batteryData.power,
                 batteryData.soc, batteryData.rssi);
+}
+
+void VictronBLE::calculateBatteryTime(BatteryData& batteryData) {
+  batteryData.calculated_time_remaining_minutes = 0;
+  batteryData.calculated_time_to_full_minutes = 0;
+  batteryData.time_calculation_valid = false;
+  
+  if (!batteryData.data_valid || batteryData.soc <= 0.0f) {
+    return;
+  }
+  
+  float current_abs = abs(batteryData.current);
+  
+  if (current_abs < MIN_CURRENT_THRESHOLD) {
+    return;
+  }
+  
+  if (batteryData.current < -MIN_CURRENT_THRESHOLD) {
+    float remaining_capacity_ah = (batteryData.soc / 100.0f) * BATTERY_CAPACITY_AH;
+    float time_hours = remaining_capacity_ah / current_abs;
+    batteryData.calculated_time_remaining_minutes = (uint16_t)(time_hours * 60.0f);
+    batteryData.time_calculation_valid = true;
+    
+    Serial.printf("Discharging: %.1fAh remaining, %.1fA draw, %.1fh remaining\n",
+                  remaining_capacity_ah, current_abs, time_hours);
+                  
+  } else if (batteryData.current > MIN_CURRENT_THRESHOLD) {
+    float current_capacity_ah = (batteryData.soc / 100.0f) * BATTERY_CAPACITY_AH;
+    float capacity_needed_ah = BATTERY_CAPACITY_AH - current_capacity_ah;
+    float time_hours = capacity_needed_ah / current_abs;
+    batteryData.calculated_time_to_full_minutes = (uint16_t)(time_hours * 60.0f);
+    batteryData.time_calculation_valid = true;
+    
+    Serial.printf("Charging: %.1fAh needed, %.1fA charge, %.1fh to full\n",
+                  capacity_needed_ah, current_abs, time_hours);
+  }
+  
+  if (display) {
+    display->updateData(batteryData);
+  }
 }
 
 // Callback implementation

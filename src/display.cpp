@@ -1,220 +1,378 @@
 #include "display.h"
+#include "config.h"
 
-Display::Display() : tft(TFT_eSPI()) {
+Display::Display() : display(GxEPD2_290_T94_V2(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY)) {
   memset(&currentData, 0, sizeof(currentData));
   memset(&lastDisplayedData, 0, sizeof(lastDisplayedData));
 }
 
 bool Display::begin() {
-  tft.init();
-  tft.setRotation(3);
-  tft.fillScreen(COLOR_BG);
-  tft.setTextDatum(TL_DATUM);
-  showNoData();
+  Serial.println("Initializing display...");
+  
+  // Power on the e-ink display
+  pinMode(EPD_POWER, OUTPUT);
+  digitalWrite(EPD_POWER, HIGH);
+  delay(100);
+  
+  // Initialize SPI and display
+  SPI.begin(EPD_SCK, -1, EPD_MOSI, EPD_CS);
+  display.init(115200, true, 2, false);
+  
+  // Show initial screen
+  showTestScreen();
+  
+  Serial.println("Display ready");
   return true;
 }
 
 void Display::updateData(const BatteryData& data) {
+  BatteryData previousData = currentData;
   currentData = data;
   currentData.last_update = millis();
-  screenNeedsUpdate = true;
+  
+  if (hasSignificantChange(currentData, lastDisplayedData)) {
+    screenNeedsUpdate = true;
+    Serial.printf("Display: Significant change detected - scheduling update\n");
+  }
+  
+  Serial.printf("Display: Received data - V:%.2f, Valid:%d, NeedsUpdate:%d\n", 
+                currentData.voltage, currentData.data_valid, screenNeedsUpdate);
+}
+
+bool Display::hasSignificantChange(const BatteryData& newData, const BatteryData& oldData) {
+  if (newData.data_valid != oldData.data_valid) {
+    Serial.println("Change: Data validity");
+    return true;
+  }
+  
+  if (!newData.data_valid) {
+    return false;
+  }
+  
+  if (newData.alarms != oldData.alarms) {
+    Serial.println("Change: Alarms");
+    return true;
+  }
+  
+  if (abs(newData.voltage - oldData.voltage) > VOLTAGE_CHANGE_THRESHOLD) {
+    Serial.printf("Change: Voltage %.2f -> %.2f\n", oldData.voltage, newData.voltage);
+    return true;
+  }
+  
+  if (abs(newData.current - oldData.current) > CURRENT_CHANGE_THRESHOLD) {
+    Serial.printf("Change: Current %.2f -> %.2f\n", oldData.current, newData.current);
+    return true;
+  }
+  
+  if (abs(newData.soc - oldData.soc) > SOC_CHANGE_THRESHOLD) {
+    Serial.printf("Change: SOC %.1f -> %.1f\n", oldData.soc, newData.soc);
+    return true;
+  }
+  
+  if (abs(newData.power - oldData.power) > POWER_CHANGE_THRESHOLD) {
+    Serial.printf("Change: Power %.1f -> %.1f\n", oldData.power, newData.power);
+    return true;
+  }
+  
+  if (newData.time_calculation_valid != oldData.time_calculation_valid) {
+    Serial.println("Change: Time calculation validity");
+    return true;
+  }
+  
+  if (newData.time_calculation_valid) {
+    if (abs((int)newData.calculated_time_remaining_minutes - (int)oldData.calculated_time_remaining_minutes) > TIME_CHANGE_THRESHOLD) {
+      Serial.printf("Change: Time remaining %d -> %d min\n", 
+                    oldData.calculated_time_remaining_minutes, newData.calculated_time_remaining_minutes);
+      return true;
+    }
+    if (abs((int)newData.calculated_time_to_full_minutes - (int)oldData.calculated_time_to_full_minutes) > TIME_CHANGE_THRESHOLD) {
+      Serial.printf("Change: Time to full %d -> %d min\n", 
+                    oldData.calculated_time_to_full_minutes, newData.calculated_time_to_full_minutes);
+      return true;
+    }
+  }
+  
+  auto getSignalBars = [](int8_t rssi) -> int {
+    if (rssi >= -82) return 4;
+    else if (rssi >= -85) return 3;
+    else if (rssi >= -89) return 2;
+    else return 1;
+  };
+  
+  if (getSignalBars(newData.rssi) != getSignalBars(oldData.rssi)) {
+    Serial.printf("Change: Signal strength %d -> %d dBm\n", oldData.rssi, newData.rssi);
+    return true;
+  }
+  
+  auto getCurrentState = [](float current) -> int {
+    if (current > 0.1f) return 1;  // charging
+    else if (current < -0.1f) return -1;  // discharging
+    else return 0;  // idle
+  };
+  
+  if (getCurrentState(newData.current) != getCurrentState(oldData.current)) {
+    Serial.println("Change: Charging/discharging state");
+    return true;
+  }
+  
+  if (abs(newData.consumed_ah - oldData.consumed_ah) > CONSUMED_AH_THRESHOLD) {
+    Serial.printf("Change: Consumed Ah %.1f -> %.1f\n", oldData.consumed_ah, newData.consumed_ah);
+    return true;
+  }
+  
+  return false;
 }
 
 void Display::refresh() {
-  if (!screenNeedsUpdate && millis() - lastScreenUpdate < 1000) return;
-  if (millis() - currentData.last_update > 30000) {
-    showNoData();
-    return;
-  }
-  if (!currentData.data_valid) {
-    showNoData();
+  unsigned long currentTime = millis();
+  bool dataStale = !currentData.data_valid || currentTime - currentData.last_update > 60000;
+  bool forcePeriodicUpdate = currentTime - lastScreenUpdate > PERIODIC_REFRESH_INTERVAL;
+  bool criticalUpdate = currentData.data_valid && currentData.alarms != 0;
+  
+  bool shouldUpdate = screenNeedsUpdate || dataStale || forcePeriodicUpdate || criticalUpdate;
+  
+  if (!shouldUpdate) {
     return;
   }
   
-  // Clear the screen completely when transitioning from no data to real data
-  bool wasShowingNoData = (millis() - lastDisplayedData.last_update > 30000) || !lastDisplayedData.data_valid;
-  if (wasShowingNoData) {
-    tft.fillScreen(COLOR_BG);
+  Serial.printf("Display refresh: needsUpdate=%d, stale=%d, periodic=%d, critical=%d\n", 
+                screenNeedsUpdate, dataStale, forcePeriodicUpdate, criticalUpdate);
+  
+  display.setRotation(1);
+  
+  bool useFullUpdate = forcePeriodicUpdate || (currentTime - lastScreenUpdate > FULL_REFRESH_INTERVAL);
+  
+  if (useFullUpdate) {
+    display.setFullWindow();
+    Serial.println("Using full display update");
+  } else {
+    display.setPartialWindow(0, 0, 296, 128);
   }
   
-  drawBatteryInfo();
-  drawCurrentAndPower();
-  drawSOCBar();
-  drawAuxInfo();
-  drawConnectionStatus();
+  display.fillScreen(GxEPD_WHITE);
+  display.setTextColor(GxEPD_BLACK);
+  
+  if (dataStale) {
+    display.setFont(&FreeMonoBold12pt7b);
+    display.setCursor(10, 40);
+    display.print("NO DATA");
+    
+    display.setFont(&FreeMonoBold9pt7b);
+    display.setCursor(10, 70);
+    display.print("Searching...");
+    
+    display.setCursor(10, 95);
+    display.print("Check bluetooth connection");
+  } else {
+    display.setFont(&FreeMonoBold18pt7b);
+    display.setCursor(10, 35);
+    display.print(String(currentData.voltage, 1) + "V");
+    
+    display.setCursor(160, 35);
+    display.print(String((int)currentData.soc) + "%");
+    
+    display.drawRect(240, 15, 40, 20, GxEPD_BLACK);
+    display.drawRect(280, 20, 4, 10, GxEPD_BLACK);
+    int fillWidth = (currentData.soc / 100.0) * 38;
+    if (fillWidth > 0) {
+      display.fillRect(241, 16, fillWidth, 18, GxEPD_BLACK);
+    }
+    
+    display.setFont(&FreeMonoBold12pt7b);
+    display.setCursor(10, 65);
+    if (currentData.current >= 0) {
+      display.print("+" + String(currentData.current, 1) + "A");
+    } else {
+      display.print(String(currentData.current, 1) + "A");
+    }
+    
+    display.setCursor(110, 65);
+    display.print(String((int)abs(currentData.power)) + "W");
+    
+    display.setFont(&FreeMonoBold9pt7b);
+    display.setCursor(220, 65);
+    unsigned long timeSinceUpdate = (millis() - currentData.last_update) / 1000;
+    if (timeSinceUpdate < 60) {
+      display.print(String(timeSinceUpdate) + "s");
+    } else if (timeSinceUpdate < 3600) {
+      display.print(String(timeSinceUpdate / 60) + "m");
+    } else {
+      display.print(">1h");
+    }
+    
+    display.setFont(&FreeMonoBold9pt7b);
+    display.setCursor(10, 90);
+    
+    if (currentData.time_calculation_valid) {
+      if (currentData.current < -0.1) {
+        int hours = currentData.calculated_time_remaining_minutes / 60;
+        int mins = currentData.calculated_time_remaining_minutes % 60;
+        if (hours > 0) {
+          display.print("TTG: " + String(hours) + "h" + String(mins) + "m");
+        } else {
+          display.print("TTG: " + String(mins) + "min");
+        }
+      } else if (currentData.current > 0.1) {
+        int hours = currentData.calculated_time_to_full_minutes / 60;
+        int mins = currentData.calculated_time_to_full_minutes % 60;
+        if (hours > 0) {
+          display.print("TTC: " + String(hours) + "h" + String(mins) + "m");
+        } else {
+          display.print("TTC: " + String(mins) + "min");
+        }
+      } else {
+        display.print("IDLE");
+      }
+    } else {
+      if (currentData.ttg_minutes > 0 && currentData.current < -0.1) {
+        int hours = currentData.ttg_minutes / 60;
+        int mins = currentData.ttg_minutes % 60;
+        if (hours > 0) {
+          display.print("TTG: " + String(hours) + "h" + String(mins) + "m");
+        } else {
+          display.print("TTG: " + String(mins) + "min");
+        }
+      } else if (currentData.current > 0.1) {
+        display.print("CHARGING");
+      } else if (currentData.current < -0.1) {
+        display.print("DISCHARGING");
+      } else {
+        display.print("IDLE");
+      }
+    }
+    
+    display.setCursor(200, 90);
+    int signalBars;
+    if (currentData.rssi >= -82) {
+      signalBars = 4;
+    } else if (currentData.rssi >= -85) {
+      signalBars = 3;
+    } else if (currentData.rssi >= -89) {
+      signalBars = 2;
+    } else {
+      signalBars = 1;
+    }
+    
+    for (int i = 0; i < 4; i++) {
+      if (i < signalBars) {
+        display.print("|");
+      } else {
+        display.print(".");
+      }
+    }
+    
+    display.setCursor(10, 115);
+    display.print("Used: " + String(abs(currentData.consumed_ah), 1) + "Ah");
+    
+    display.setCursor(180, 115);
+    if (currentData.alarms != 0) {
+      display.print("ALARM!");
+    } else {
+      display.print("OK");
+    }
+  }
+  
+  display.display(!useFullUpdate);
+  
   lastDisplayedData = currentData;
   screenNeedsUpdate = false;
-  lastScreenUpdate = millis();
+  lastScreenUpdate = currentTime;
 }
 
 void Display::showNoData() {
-  tft.fillRect(0, 0, 240, 135, COLOR_BG);
-  tft.setTextColor(TFT_RED, COLOR_BG);
-  tft.setTextSize(2);
-  tft.setCursor(70, 50);
-  tft.print("No Data");
-  tft.setTextColor(COLOR_TEXT, COLOR_BG);
-  tft.setTextSize(1);
-  tft.setCursor(50, 80);
-  tft.print("Waiting for SmartShunt...");
+  display.setRotation(1);
+  display.setFullWindow();
+  display.fillScreen(GxEPD_WHITE);
+  display.setTextColor(GxEPD_BLACK);
+  
+  display.setFont(&FreeMonoBold12pt7b);
+  display.setCursor(10, 40);
+  display.print("NO DATA");
+  
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(10, 70);
+  display.print("Searching...");
+  
+  display.display(false);
 }
 
 void Display::showTestScreen() {
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextColor(TFT_WHITE);
-  tft.setTextSize(2);
-  tft.setCursor(10, 10);
-  tft.print("Battery Monitor");
-  tft.setTextSize(1);
-  tft.setCursor(10, 40);
-  tft.print("Text rendering works!");
+  display.setRotation(1);
+  display.setFullWindow();
+  display.fillScreen(GxEPD_WHITE);
+  
+  display.setTextColor(GxEPD_BLACK);
+  display.setFont(&FreeMonoBold12pt7b);
+  display.setCursor(10, 30);
+  display.print("Battery Monitor");
+  
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(10, 55);
+  display.print("Waiting for data...");
+  
+  display.setCursor(10, 80);
+  display.print("BTLE Power Gauge");
+  
+  display.setCursor(10, 105);
+  display.print("Ready");
+  
+  display.display(false);
 }
 
-void Display::drawHeader() {
-  // Header removed - no longer used
-}
-
-void Display::drawBatteryInfo() {
-  // Voltage: Top right, large text
-  tft.setTextColor(COLOR_VOLTAGE, COLOR_BG);
-  tft.setTextSize(3);
-  if (abs(currentData.voltage - lastDisplayedData.voltage) > 0.01f) {
-    clearValue(120, 5, 115, 25);
-    tft.setCursor(120, 5);
-    tft.print(String(currentData.voltage, 2) + "V");
+void Display::showConfigScreen(const String& title, const String& line1, const String& line2, const String& line3, const String& line4) {
+  display.setRotation(1);
+  display.setFullWindow();
+  display.fillScreen(GxEPD_WHITE);
+  
+  display.setTextColor(GxEPD_BLACK);
+  display.setFont(&FreeMonoBold12pt7b);
+  display.setCursor(10, 30);
+  display.print(title);
+  
+  display.setFont(&FreeMonoBold9pt7b);
+  
+  if (line1.length() > 0) {
+    display.setCursor(10, 55);
+    display.print(line1);
   }
   
-  // Time to Go: Right side, medium text
-  if (currentData.ttg_minutes != lastDisplayedData.ttg_minutes && currentData.ttg_minutes > 0) {
-    clearValue(120, 35, 115, 20);
-    tft.setTextColor(COLOR_TEXT, COLOR_BG);
-    tft.setTextSize(2);
-    int hours = currentData.ttg_minutes / 60;
-    int mins = currentData.ttg_minutes % 60;
-    tft.setCursor(120, 35);
-    if (hours > 0) {
-      tft.print(String(hours) + "h" + String(mins) + "m");
-    } else {
-      tft.print(String(mins) + "min");
-    }
-  }
-}
-
-void Display::drawCurrentAndPower() {
-  uint16_t currentColor = COLOR_TEXT;
-  if (currentData.current > 0.1f) currentColor = COLOR_CURRENT_CHARGE;
-  else if (currentData.current < -0.1f) currentColor = COLOR_CURRENT_DISCHARGE;
-  
-  // Current: Right middle, large text - space for up to 999A
-  if (abs(currentData.current - lastDisplayedData.current) > 0.01f) {
-    clearValue(120, 60, 115, 25);
-    tft.setTextColor(currentColor, COLOR_BG);
-    tft.setTextSize(3);
-    tft.setCursor(120, 60);
-    // Format current to handle high values properly
-    if (abs(currentData.current) >= 100.0f) {
-      tft.print(String((int)currentData.current) + "A");  // No decimal for 100A+
-    } else if (abs(currentData.current) >= 10.0f) {
-      tft.print(String(currentData.current, 1) + "A");    // One decimal for 10-99A
-    } else {
-      tft.print(String(currentData.current, 1) + "A");    // One decimal for <10A
-    }
+  if (line2.length() > 0) {
+    display.setCursor(10, 75);
+    display.print(line2);
   }
   
-  // Power: Right lower, large text - space for up to 9999W
-  if (abs(currentData.power - lastDisplayedData.power) > 0.1f) {
-    clearValue(120, 90, 115, 25);
-    tft.setTextColor(currentColor, COLOR_BG);
-    tft.setTextSize(3);
-    tft.setCursor(120, 90);
-    // Format power to handle high values
-    if (abs(currentData.power) >= 1000.0f) {
-      tft.print(String((int)(currentData.power/1000)) + "kW");  // Show as kW for 1000W+
-    } else {
-      tft.print(String((int)abs(currentData.power)) + "W");    // Watts for <1000W
-    }
+  if (line3.length() > 0) {
+    display.setCursor(10, 95);
+    display.print(line3);
   }
   
-  // Status: Bottom right, smaller text
-  if ((currentData.current > 0.1f) != (lastDisplayedData.current > 0.1f) ||
-      (currentData.current < -0.1f) != (lastDisplayedData.current < -0.1f)) {
-    clearValue(120, 115, 115, 20);
-    tft.setTextColor(currentColor, COLOR_BG);
-    tft.setTextSize(2);
-    tft.setCursor(120, 115);
-    if (currentData.current > 0.1f) tft.print("CHARGE");
-    else if (currentData.current < -0.1f) tft.print("DRAIN");
-    else tft.print("IDLE");
+  if (line4.length() > 0) {
+    display.setCursor(10, 115);
+    display.print(line4);
   }
-}
-
-void Display::drawSOCBar() {
-  if (abs(currentData.soc - lastDisplayedData.soc) > 0.1f) {
-    // Clear the entire left area for battery display
-    clearValue(5, 5, 110, 125);
-    uint16_t socColor = COLOR_SOC_HIGH;
-    if (currentData.soc < 20.0f) socColor = COLOR_SOC_LOW;
-    else if (currentData.soc < 50.0f) socColor = COLOR_SOC_MED;
-    
-    // MASSIVE battery percentage at the top - size adjusts for 100%
-    tft.setTextColor(socColor, COLOR_BG);
-    if (currentData.soc >= 100.0f) {
-      // Size 5 for "100%" to fit in width (30x40px per char * 4 = 120px)
-      tft.setTextSize(5);
-      tft.setCursor(5, 10);
-      tft.print("100%");
-    } else {
-      // Size 6 for "99%" and below (36x48px per char * 3 = 108px)
-      tft.setTextSize(6);
-      tft.setCursor(5, 5);
-      tft.print(String((int)currentData.soc) + "%");
-    }
-    
-    // "Total" label below the percentage - medium size
-    tft.setTextColor(COLOR_TEXT, COLOR_BG);
-    tft.setTextSize(2);
-    tft.setCursor(5, 65);
-    tft.print("Total");
-    
-    // Total value on separate line - large size
-    tft.setTextColor(COLOR_TEXT, COLOR_BG);
-    tft.setTextSize(3);
-    tft.setCursor(5, 85);
-    // Format for space efficiency - handles high values
-    if (abs(currentData.consumed_ah) >= 1000.0f) {
-      // Very high values: show in kAh
-      tft.print(String(currentData.consumed_ah/1000.0f, 1) + "kAh");
-    } else if (abs(currentData.consumed_ah) >= 100.0f) {
-      // 100+ Ah: no decimal
-      tft.print(String((int)currentData.consumed_ah) + "Ah");
-    } else {
-      // <100 Ah: one decimal
-      tft.print(String(currentData.consumed_ah, 1) + "Ah");
-    }
-  }
-}
-
-void Display::drawAuxInfo() {
-  // Total is now handled in drawSOCBar() to avoid spacing issues
   
-  // Alarms: Full width at very bottom if present
-  if (currentData.alarms != lastDisplayedData.alarms && currentData.alarms != 0) {
-    clearValue(0, 125, 240, 10);
-    tft.setTextColor(COLOR_ALARM, COLOR_BG);
-    tft.setTextSize(1);
-    tft.setCursor(5, 125);
-    tft.print("ALARM: 0x" + String(currentData.alarms, HEX));
-  }
-}
-
-void Display::drawConnectionStatus() {
-  // Connection status removed to maximize space for data
-}
-
-void Display::clearValue(int x, int y, int w, int h) {
-  tft.fillRect(x, y, w, h, COLOR_BG);
+  display.display(false);
 }
 
 void Display::setBrightness(uint8_t brightness) {
-  // Placeholder for PWM control
+  Serial.printf("E-ink displays don't support brightness control\n");
+}
+
+void Display::clearScreen() {
+  display.setFullWindow();
+  display.firstPage();
+  do {
+    display.fillScreen(GxEPD_WHITE);
+  } while (display.nextPage());
+}
+
+void Display::drawText(int16_t x, int16_t y, const String& text, const GFXfont* font) {
+  display.setTextColor(GxEPD_BLACK);
+  if (font) {
+    display.setFont(font);
+  } else {
+    display.setFont();
+  }
+  display.setCursor(x, y);
+  display.print(text);
 } 

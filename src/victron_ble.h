@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include "NimBLEDevice.h"
 #include "display.h"
+#include "config.h"
 
 class VictronBLE {
 private:
@@ -20,6 +21,7 @@ private:
   uint32_t extractBits(const uint8_t* data, int startBit, int numBits);
   int32_t signExtend(uint32_t value, int bits);
   void parseSmartShuntData(const uint8_t* data, size_t len, int8_t rssi);
+  void calculateBatteryTime(BatteryData& batteryData);
 
 public:
   VictronBLE(const char* macAddress, const char* encryptionKey);
