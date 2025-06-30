@@ -56,9 +56,11 @@ public:
   void showNoData();
   void showTestScreen();
   void showConfigScreen(const String& title, const String& line1 = "", const String& line2 = "", const String& line3 = "", const String& line4 = "");
+  void showSleepScreen();
   void setBrightness(uint8_t brightness);
   void clearScreen();
   void drawText(int16_t x, int16_t y, const String& text, const GFXfont* font = nullptr);
+  void forceNextUpdate(); // Force the next refresh to update display
   
   // Status information
   bool isUpdatePending() const { return screenNeedsUpdate; }

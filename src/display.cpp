@@ -162,7 +162,7 @@ void Display::refresh() {
     display.print("Searching...");
     
     display.setCursor(10, 95);
-    display.print("Check bluetooth connection");
+    display.print("Check connection");
   } else {
     display.setFont(&FreeMonoBold18pt7b);
     display.setCursor(10, 35);
@@ -354,6 +354,32 @@ void Display::showConfigScreen(const String& title, const String& line1, const S
   display.display(false);
 }
 
+void Display::showSleepScreen() {
+  display.setRotation(1);
+  display.setFullWindow();
+  display.fillScreen(GxEPD_WHITE);
+  
+  display.setTextColor(GxEPD_BLACK);
+  
+  // Draw a simple "sleep" icon using text characters
+  display.setFont(&FreeMonoBold18pt7b);
+  display.setCursor(120, 40);
+  display.print("ZZ");
+  
+  display.setFont(&FreeMonoBold12pt7b);
+  display.setCursor(90, 70);
+  display.print("SLEEPING");
+  
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(70, 95);
+  display.print("Press button to wake");
+  
+  display.setCursor(85, 115);
+  display.print("Power saving mode");
+  
+  display.display(false);
+}
+
 void Display::setBrightness(uint8_t brightness) {
   Serial.printf("E-ink displays don't support brightness control\n");
 }
@@ -375,4 +401,12 @@ void Display::drawText(int16_t x, int16_t y, const String& text, const GFXfont* 
   }
   display.setCursor(x, y);
   display.print(text);
+}
+
+void Display::forceNextUpdate() {
+  // Reset the display state to force an update on next refresh
+  memset(&lastDisplayedData, 0, sizeof(lastDisplayedData));
+  lastDisplayedData.data_valid = false;
+  screenNeedsUpdate = true;
+  Serial.println("Display: Forcing next update (reset after wake from sleep)");
 } 
